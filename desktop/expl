@@ -1,0 +1,245 @@
+#!/bin/bash
+
+#exec 2>/dev/null
+
+adb_execute_or_exit() {
+	if [ $VERBOSE ]; then
+		echo "[i] $@"
+	fi
+
+	eval $@
+	if [ $? != 0 ]; then
+		exit 1;
+	fi
+}
+
+adb_execute_or_error() {
+	if [ $VERBOSE ]; then
+	    echo "[i] $@"
+	fi
+
+	eval $@
+	status=$?
+	if [ ${status} != 0 ]; then
+		echo "[e] ${status} $@"
+	fi
+	return ${status}
+}
+
+OPTS=$(getopt -o ifer:hv --long init,frida,expl,remote:,server,save,help,verbose -- "$@")
+if [ $? != 0 ]; then
+	echo "Failed parsing options" >&2
+	exit 1
+fi
+
+eval set -- "$OPTS"
+IFS=$'\n' read -a l -d '' < toignore
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+	key="$1"
+
+	case $key in
+		--init|-i)
+			INIT=1
+			shift # past argument
+			;;
+		--frida|-f)
+			FRIDA=1
+			shift
+			;;
+		--expl|-e)
+			EXPL=1
+			shift # past argument
+			;;
+		--remote|-r)
+			REMOTE=1
+			shift
+			host=$(echo $1 | cut -d':' -f1)
+			port=$(echo $1 | cut -d':' -f2)
+			;;
+		--server)
+			SERVER=1
+			shift
+			;;
+		--save)
+			SAVE=1
+			shift
+			;;
+		--verbose|-v)
+			VERBOSE=1
+			shift
+			;;
+		--help|-h)
+			echo "[*] LiveQuiz Hacks"
+			echo -en "\t-i | --init:                      init frida\n"
+			echo -en "\t-f | --frida:                     start script hooking.js\n"
+			echo -en "\t-e | --expl:                      start the exploit\n"
+			echo -en "\t-r | --remote  <host:port>:       remote mode on\n"
+			echo -en "\t     --server                     start npm server\n"
+			echo -en "\t-v | --verbose:                   verbose mode on\n"
+			echo -en "\t     --save:                      save logs to the end\n"
+			exit;
+			;;
+		*)
+			POSITIONAL+=("$1") # save it in an array for later
+			shift # past argument
+			;;
+	esac
+done
+set -- "${POSITIONAL[@]}"
+
+if [ $SERVER ]; then
+	npm start --prefix server 2>&1 >/dev/null &
+	serverPid=$!
+fi
+
+if [ $INIT ]; then
+	if [ $REMOTE ]; then
+		echo -en "[!] eseguire le seguenti opzioni sul device:\n"
+		echo "su"
+		echo "setprop service.adb.tcp.port ${port}"
+		echo "stop adbd"
+		echo "start adbd"
+		echo
+		echo "continua..."
+		read
+		#adb_execute_or_exit "sudo adb tcpip $port"
+		adb_execute_or_exit "sudo adb connect ${host}:${port}"
+	fi
+
+	adb_execute_or_exit "sudo adb root"
+	#adb_execute_or_exit "adb shell 'echo 0 > /sys/fs/selinux/enforce'"
+
+	if [ $REMOTE ]; then
+		adb_execute_or_error "adb shell \"/data/local/tmp/frida-server-*-android-arm64 -D -l ${host}:$((port+1)) &\""
+	else
+		adb_execute_or_error "adb shell \"/data/local/tmp/frida-server-*-android-arm64 -D &\""
+	fi
+	rm logs/log.json
+	adb_execute_or_error "adb shell \"rm /data/data/com.bendingspoons.live.quiz/log.json\""
+fi
+
+if [ $FRIDA ]; then
+	cmdFrida="frida -l agent.js --no-pause"
+	livequizPid=$(adb shell 'pgrep live.quiz | head -n1')
+	if [[ -n ${livequizPid} ]]; then
+		cmdFrida+=" -n com.bendingspoons.live.quiz"
+	else
+		cmdFrida+=" -f com.bendingspoons.live.quiz"
+	fi
+	if [ $REMOTE ]; then
+		cmdFrida+=" -H ${host}:$((port+1))"
+	else
+		cmdFrida+=" -U"
+	fi
+	cmd="urxvt -e zsh -c \"${cmdFrida}; zsh\" &"
+	eval "$cmd"
+fi
+
+count=0
+error=0
+
+while $(sleep 0.2); do
+	# salva ed esci quando arriva la risposta dell'ultima domanda
+	if [[ $count == 12 && `jq -r ".[30][1][23][$((count-1))][14]" logs/log.json` == 'correct_choice' ]]; then
+		if [ $SAVE ]; then
+			echo "saving..."
+			current=$(ls logs/log.json.* | sort -V | tail -n-1 | cut -d'.' -f3)
+			cp logs/log.json logs/log.json.$((current+1))
+			# server per liveanswer.me
+			timestamp=`jq -r '.[30][1][23][0][5]' logs/log.json`;
+			f=`date --date="@${timestamp%000}" +%Y_%m_%d-%H_%M`;
+			contest=$(jq "[.[30][1][23][] | {question: .[7], answers:.[9], correct:.[15]}]" logs/log.json)
+			#salva contest sul server
+			curl -i -X POST http://liveanswer.me:3900/addcontest -H "Accept: application/json" -H "Content-type: application/json" -d "{\"filename\":\"$f\", \"contest\":$contest}"
+		fi
+		# kill frida
+		fridaPid=$(adb shell "pgrep frida | head -n1")
+		if [[ -n $fridaPid ]]; then
+			adb_execute_or_exit "adb shell \"kill -9 $fridaPid\""
+		fi
+		# kill server
+		if [ $SERVER ]; then
+			kill -9 $serverPid
+		fi
+		exit
+	fi
+
+	# pulla log.json da android
+	adb_execute_or_error "adb pull /data/data/com.bendingspoons.live.quiz/log.json logs/log.json >/dev/null"
+
+	# se il contest e' cominciato prima di un ora fa
+	start_time=`jq -r ".[30][1][23][0][5]" logs/log.json`
+	if [[ $start_time != 'null' && $start_time -ge $(echo $(($(date +%s)-3600))000) ]]; then
+		# legge la domanda
+		q=`jq -r ".[30][1][23][$count][7]" logs/log.json`
+
+		# se non c'e' la domanda, aspetta
+		if [[ $q == 'null' ]]; then
+			continue
+		fi
+		
+		# se riavvio l'app, permette di raggiungere la domanda corrente velocemente
+		# controllando se esiste correct_choice
+		if [[ `jq -r ".[30][1][23][$((count))][14]" logs/log.json` == 'correct_choice' ]]; then
+			echo "jumping $count"
+			count=$((count + 1))
+			continue
+		fi
+
+		# legge le risposte
+		cat logs/log.json > logs/log-$count.json
+		a1=`jq -r ".[30][1][23][$count][9][0]" logs/log.json`
+		a2=`jq -r ".[30][1][23][$count][9][1]" logs/log.json`
+		a3=`jq -r ".[30][1][23][$count][9][2]" logs/log.json`
+
+		#apri firefox
+		firefox "$q $a1"
+		firefox "$q $a2"
+		firefox "$q $a3"
+
+		json_fmt='{"question":"%s","answers":["%s","%s","%s"]}'
+		json_data=$(printf "$json_fmt" "$q" "$a1" "$a2" "$a3")
+		echo $json_data
+
+		if [ $EXPL ]; then
+			# prende l'ultima riga dell'output di expl.py
+			answer_index=$(python solvers/expl.py "$json_data" | tail -n -1)
+
+			case $answer_index in
+				0)
+					y=980
+					;;
+				1)
+					y=1170
+					;;
+				2)
+					y=1360
+					;;
+				*)
+					false
+					;;
+			esac
+
+			if [[ $? == 0 ]]; then
+				echo "answering: $answer_index"
+				# risponde all'ultimo secondo
+				end_time=`jq -r ".[30][1][23][$count][11]" logs/log.json`
+				end_time=${end_time%000}
+				while $(sleep 0.1); do
+					if [[ $(($(date +%s)+1)) -ge $end_time ]]; then
+						d=$(date --date="@${end_time%000}")
+						echo "ora: $(date +%s) -> $(date)"
+						echo "end: $end_time -> $d"
+						adb_execute_or_error "adb shell \"input touchscreen tap 530 $y\""
+						break
+					fi
+				done
+			else
+				echo "[!] NOT ANSWERING: $answer_index"
+			fi
+		fi
+		count=$((count + 1))
+	fi
+done

@@ -1,0 +1,6 @@
+base*
+solvers/__pycache__
+solvers/dump*
+desktop/old
+desktop/logs/*
+mitm_test/dec.py
