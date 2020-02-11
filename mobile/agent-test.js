@@ -3,6 +3,10 @@
 if (Java.available) {
   Java.perform(function() {
     console.log("[*] Script Started");
+    const Client = Java.use('okhttp3.OkHttpClient');
+    const RealWebSocket = Java.use('okhttp3.internal.ws.RealWebSocket$2');
+
+
     const ClientBuilder = Java.use('okhttp3.OkHttpClient$Builder');
     const RequestBuilder = Java.use('okhttp3.Request$Builder');
     const RequestBody = Java.use('okhttp3.RequestBody');
@@ -52,7 +56,7 @@ if (Java.available) {
     });
 
     function sendResults(){
-      console.log('sendResults');
+      console.log('[*] sendResults');
       var clientBuilder = ClientBuilder.$new();
       var client = clientBuilder.build();
       var s = StringClass.$new(JSON.stringify(full));
@@ -112,16 +116,13 @@ if (Java.available) {
       else
         oldQuestion = res['question']
 
-      if (res.question == null)
-        return null;
-
       console.log(counter + ' : ' + JSON.stringify(res));
       return res;
     }
 
 
     function save_global(){
-      console.log('save_global');
+      console.log('[*] save_global');
       var clientBuilder = ClientBuilder.$new();
       var client = clientBuilder.build();
       var s = StringClass.$new(JSON.stringify(data_global));
@@ -141,7 +142,6 @@ if (Java.available) {
 
 
     // Load CAs from an InputStream
-    console.log("[+] Loading our CA...")
     var cf = CertificateFactory.getInstance("X.509");
     
     try {
@@ -155,29 +155,20 @@ if (Java.available) {
     bufferedInputStream.close();
 
     var certInfo = Java.cast(ca, X509Certificate);
-    console.log("[o] Our CA Info: " + certInfo.getSubjectDN());
 
     // Create a KeyStore containing our trusted CAs
-    console.log("[+] Creating a KeyStore for our CA...");
     var keyStoreType = KeyStore.getDefaultType();
     var keyStore = KeyStore.getInstance(keyStoreType);
     keyStore.load(null, null);
     keyStore.setCertificateEntry("ca", ca);
     
     // Create a TrustManager that trusts the CAs in our KeyStore
-    console.log("[+] Creating a TrustManager that trusts the CA in our KeyStore...");
     var tmfAlgorithm = TrustManagerFactory.getDefaultAlgorithm();
     var tmf = TrustManagerFactory.getInstance(tmfAlgorithm);
     tmf.init(keyStore);
-    console.log("[+] Our TrustManager is ready...");
-
-    console.log("[+] Hijacking SSLContext methods now...")
-    console.log("[-] Waiting for the app to invoke SSLContext.init()...")
 
     SSLContext.init.overload("[Ljavax.net.ssl.KeyManager;", "[Ljavax.net.ssl.TrustManager;", "java.security.SecureRandom").implementation = function(a,b,c) {
-            console.log("[o] App invoked javax.net.ssl.SSLContext.init...");
             SSLContext.init.overload("[Ljavax.net.ssl.KeyManager;", "[Ljavax.net.ssl.TrustManager;", "java.security.SecureRandom").call(this, a, tmf.getTrustManagers(), c);
-            console.log("[+] SSLContext initialized with our custom TrustManager!");
     }
 
     MethodCall.argument.implementation = function(key){
