@@ -7,12 +7,8 @@ import re
 from threading import Thread
 
 DEBUG = False 
-my_api_key = "***REMOVED***"
-my_cse_id  = "***REMOVED***"
-my_api_key = "***REMOVED***"
-my_cse_id  = "***REMOVED***"
-my_api_key = "***REMOVED***"
-my_cse_id  = "***REMOVED***"
+my_api_key = ""
+my_cse_id  = ""
 
 
 def google_search(search_term, api_key, cse_id, **kwargs):
